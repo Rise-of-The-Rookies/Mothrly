@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { NativeModules } from 'react-native';
 import Purchases, {
   LOG_LEVEL,
   type CustomerInfo,
   type MakePurchaseResult,
+  type PurchasesEntitlementInfo,
   type PurchasesOffering,
   type PurchasesOfferings,
   type PurchasesPackage,
@@ -19,6 +21,18 @@ const API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_API_KEY;
 let configured = false;
 
 /**
+ * Whether the native RevenueCat SDK is actually present.
+ *
+ * `react-native-purchases` imports cleanly without its native module — it only
+ * fails at the first call, with an opaque "cannot read property of undefined".
+ * Checking up front lets the app run in Expo Go (which does not bundle it) with
+ * purchases simply switched off, instead of crashing at startup.
+ */
+export function isRevenueCatAvailable(): boolean {
+  return NativeModules.RNPurchases != null;
+}
+
+/**
  * Configures the RevenueCat SDK. Safe to call more than once — only the first
  * call reaches the native SDK.
  *
@@ -28,6 +42,15 @@ let configured = false;
  */
 export function configureRevenueCat(): void {
   if (configured) return;
+
+  if (!isRevenueCatAvailable()) {
+    console.warn(
+      '[revenuecat] Native SDK unavailable — skipping configure(). ' +
+        'Purchases and entitlements are disabled. A development build is ' +
+        'required (Expo Go does not bundle react-native-purchases).',
+    );
+    return;
+  }
 
   if (!API_KEY) {
     console.warn(
@@ -68,9 +91,39 @@ export function restorePurchases(): Promise<CustomerInfo> {
   return Purchases.restorePurchases();
 }
 
-/** Returns whether the given CustomerInfo has the premium entitlement active. */
-function hasPremium(customerInfo: CustomerInfo): boolean {
-  return customerInfo.entitlements.active[PREMIUM_ENTITLEMENT_ID] !== undefined;
+/**
+ * Fetches the latest CustomerInfo for the current customer.
+ *
+ * Hits the network when the cache is stale, so it is the honest answer rather
+ * than whatever {@link usePremiumEntitlement} last heard.
+ */
+export function getCustomerInfo(): Promise<CustomerInfo> {
+  return Purchases.getCustomerInfo();
+}
+
+/**
+ * The premium entitlement if it is currently active, otherwise `null`.
+ *
+ * Reading the entitlement rather than a boolean gives callers the terms too —
+ * renewal date, trial or not, whether the store has flagged a billing problem.
+ */
+export function premiumEntitlement(
+  customerInfo: CustomerInfo,
+): PurchasesEntitlementInfo | undefined {
+  return customerInfo.entitlements.active[PREMIUM_ENTITLEMENT_ID];
+}
+
+/**
+ * Returns whether the given CustomerInfo has the premium entitlement active.
+ *
+ * Exported because `purchasePackage` and `restorePurchases` both resolve with a
+ * CustomerInfo: checking it directly lets a caller react to its own purchase
+ * without waiting on {@link usePremiumEntitlement}'s listener to come round.
+ * A purchase can also succeed *without* granting the entitlement — a Google Play
+ * transaction left pending, for one — which is only visible by looking.
+ */
+export function hasPremiumEntitlement(customerInfo: CustomerInfo): boolean {
+  return premiumEntitlement(customerInfo) !== undefined;
 }
 
 /**
@@ -84,14 +137,20 @@ function hasPremium(customerInfo: CustomerInfo): boolean {
  */
 export function usePremiumEntitlement(): { isPremium: boolean; isLoading: boolean } {
   const [isPremium, setIsPremium] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  // Without the native SDK there is nothing to ask, so this starts already
+  // settled: callers render their free state rather than a spinner that will
+  // never resolve. Decided here rather than in the effect below, which would mean
+  // a synchronous setState and a wasted second render on every mount.
+  const [isLoading, setIsLoading] = useState(isRevenueCatAvailable);
 
   useEffect(() => {
+    if (!isRevenueCatAvailable()) return;
+
     let cancelled = false;
 
     const listener = (customerInfo: CustomerInfo) => {
       if (cancelled) return;
-      setIsPremium(hasPremium(customerInfo));
+      setIsPremium(hasPremiumEntitlement(customerInfo));
       setIsLoading(false);
     };
 
@@ -100,7 +159,7 @@ export function usePremiumEntitlement(): { isPremium: boolean; isLoading: boolea
     Purchases.getCustomerInfo()
       .then((customerInfo) => {
         if (cancelled) return;
-        setIsPremium(hasPremium(customerInfo));
+        setIsPremium(hasPremiumEntitlement(customerInfo));
       })
       .catch((error) => {
         if (cancelled) return;

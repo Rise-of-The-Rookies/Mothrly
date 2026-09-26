@@ -30,7 +30,18 @@
     "plugins": [
       "expo-router",
       "expo-status-bar",
-      "expo-dev-client"
+      "expo-dev-client",
+      [
+        "expo-notifications",
+        {
+          "color": "#D85A30",
+          "defaultChannel": "reminders"
+        }
+      ],
+      "expo-sqlite",
+      "./plugins/withUsageStats",
+      "expo-font",
+      "expo-splash-screen"
     ],
     "extra": {
       "router": {},
