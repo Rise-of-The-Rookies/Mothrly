@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
+import PressableScale from '@/components/PressableScale';
 import { triggerSuperviseNudge } from '@/lib/superviseNudge';
 import { colors, fonts, radius, spacing } from '@/lib/theme';
 import { useUsageAccess } from '@/lib/useUsageSync';
@@ -98,22 +99,36 @@ export default function SuperviseScreen() {
         </Text>
 
         {usageAccess === 'denied' ? (
-          <Pressable
+          <PressableScale
             accessibilityRole="button"
             accessibilityLabel="Use my real screen time"
             accessibilityHint="Explains the permission Android needs first"
             onPress={() => router.navigate('/usage-access')}
-            style={({ pressed }) => [styles.usageCard, pressed && styles.usageCardPressed]}
+            style={styles.usageCard}
           >
             <Text style={styles.usageTitle}>Use my real screen time</Text>
             <Text style={styles.usageBody}>
               The times below are placeholders. Android can tell Mothrly how long you actually spend
               in these apps, with your permission.
             </Text>
-          </Pressable>
+          </PressableScale>
         ) : null}
 
         <View style={styles.list}>
+          {/* Defensive rather than currently reachable: the list is seeded with
+              DEFAULT_APPS and nothing in the UI calls `removeApp` yet. It is here
+              so the screen degrades to a sentence instead of a lone "+ Add app"
+              row the day removal ships, or if a rehydrate returns an empty list. */}
+          {apps.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>Nothing on the watchlist</Text>
+              <Text style={styles.emptyBody}>
+                Add an app and Mothrly will keep half an eye on how long you spend in it, then check
+                in when it starts running away with your evening.
+              </Text>
+            </View>
+          ) : null}
+
           {apps.map((app, index) => {
             const minutes = minutesToday[app.id] ?? 0;
             const time = formatMinutes(minutes);
@@ -156,19 +171,24 @@ export default function SuperviseScreen() {
             accessibilityHint="Not available yet"
             // Deliberately inert: there is no app picker to open yet.
             disabled
-            style={[styles.row, styles.rowDivided, styles.addRow]}
+            // No divider above it when it is the only row under the empty state,
+            // which would otherwise read as a rule under a heading.
+            style={[styles.row, apps.length > 0 && styles.rowDivided, styles.addRow]}
           >
             <Text style={styles.addLabel}>+ Add app</Text>
           </Pressable>
         </View>
 
         {/* Says plainly whether the numbers above are measured, so a placeholder is
-            never mistaken for a reading. */}
-        <Text style={styles.caption}>
-          {minutesSource === 'usage-stats'
-            ? "Times today, from Android's usage records."
-            : 'Placeholder times, until real tracking is switched on.'}
-        </Text>
+            never mistaken for a reading. Dropped entirely with an empty list —
+            there are no times up there for it to be describing. */}
+        {apps.length > 0 ? (
+          <Text style={styles.caption}>
+            {minutesSource === 'usage-stats'
+              ? "Times today, from Android's usage records."
+              : 'Placeholder times, until real tracking is switched on.'}
+          </Text>
+        ) : null}
       </ScrollView>
 
       {/* Rendered inside the screen rather than in a `Modal`: on iOS a modal is a
@@ -188,15 +208,16 @@ export default function SuperviseScreen() {
             <Text style={styles.demoHint}>Fires a real supervise nudge for the chosen app.</Text>
 
             {DEMO_SCENARIOS.map((scenario) => (
-              <Pressable
+              <PressableScale
                 key={scenario.id}
                 accessibilityRole="button"
                 accessibilityLabel={scenario.label}
                 onPress={() => runScenario(scenario)}
-                style={({ pressed }) => [styles.demoRow, pressed && styles.demoRowPressed]}
+                style={styles.demoRow}
+                pressedStyle={styles.demoRowPressed}
               >
                 <Text style={styles.demoRowLabel}>{scenario.label}</Text>
-              </Pressable>
+              </PressableScale>
             ))}
           </View>
         </View>
@@ -309,6 +330,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     opacity: 0.6,
   },
+
+  emptyState: {
+    paddingVertical: spacing.md,
+    gap: spacing.xs,
+  },
+  emptyTitle: {
+    fontFamily: fonts.bold,
+    fontSize: 16,
+    color: colors.text,
+  },
+  emptyBody: {
+    fontFamily: fonts.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.text,
+  },
   addLabel: {
     fontFamily: fonts.bold,
     fontSize: 15,
@@ -322,9 +359,6 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     padding: spacing.md,
     gap: spacing.xs,
-  },
-  usageCardPressed: {
-    opacity: 0.85,
   },
   usageTitle: {
     fontFamily: fonts.bold,

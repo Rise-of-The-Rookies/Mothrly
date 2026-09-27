@@ -1,8 +1,10 @@
 import { router } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import Character from '@/components/Character';
+import FadeSlideIn from '@/components/FadeSlideIn';
 import { LockIcon } from '@/components/Icons';
+import PressableScale from '@/components/PressableScale';
 import { PERSONAS, type Persona } from '@/data/personas';
 import { usePremiumEntitlement } from '@/lib/revenuecat';
 import { colors, fonts, radius, spacing } from '@/lib/theme';
@@ -44,9 +46,10 @@ export default function PersonasScreen() {
       </Text>
 
       <View accessibilityRole="radiogroup" style={styles.grid}>
-        {PERSONAS.map((persona) => (
+        {PERSONAS.map((persona, index) => (
           <PersonaCard
             key={persona.id}
+            index={index}
             persona={persona}
             selected={persona.id === personaId}
             // Premium personas stay in limbo until the entitlement is known:
@@ -63,15 +66,18 @@ export default function PersonasScreen() {
       {/* Nothing left to unlock once the entitlement is active, so the button
           retires rather than leading to a paywall for something already owned. */}
       {hasPremium ? null : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Unlock all moods"
-          accessibilityHint="Opens the upgrade options"
-          onPress={openPaywall}
-          style={({ pressed }) => [styles.unlockButton, pressed && styles.pressed]}
-        >
-          <Text style={styles.unlockButtonLabel}>Unlock all moods</Text>
-        </Pressable>
+        // Last in the cascade, after all four cards.
+        <FadeSlideIn index={PERSONAS.length}>
+          <PressableScale
+            accessibilityRole="button"
+            accessibilityLabel="Unlock all moods"
+            accessibilityHint="Opens the upgrade options"
+            onPress={openPaywall}
+            style={styles.unlockButton}
+          >
+            <Text style={styles.unlockButtonLabel}>Unlock all moods</Text>
+          </PressableScale>
+        </FadeSlideIn>
       )}
     </ScrollView>
   );
@@ -81,6 +87,8 @@ export default function PersonasScreen() {
 
 type PersonaCardProps = {
   persona: Persona;
+  /** Position in the grid's entrance cascade. */
+  index: number;
   /** Whether this is the active persona. Draws the accent border. */
   selected: boolean;
   /** Premium, and not paid for. Tapping opens the paywall instead of selecting. */
@@ -93,6 +101,7 @@ type PersonaCardProps = {
 
 function PersonaCard({
   persona,
+  index,
   selected,
   locked,
   pending,
@@ -102,59 +111,62 @@ function PersonaCard({
   const label = locked ? `${persona.name}, locked` : persona.name;
 
   return (
-    <Pressable
-      accessibilityRole="radio"
-      accessibilityLabel={label}
-      accessibilityHint={
-        locked ? 'Opens the upgrade options' : 'Sets this mood as the one she speaks in'
-      }
-      accessibilityState={{ selected, disabled: pending, busy: pending }}
-      disabled={pending}
-      onPress={locked ? onLockedPress : onSelect}
-      style={({ pressed }) => [
-        styles.card,
-        // A 2px border is always present, transparent-to-border when inactive, so
-        // selecting a card recolours it rather than resizing the grid.
-        { borderColor: selected ? persona.accentColor : colors.border },
-        pressed && styles.pressed,
-        pending && styles.cardPending,
-      ]}
-    >
-      <View style={styles.characterWrap}>
-        {/* Dimmed rather than greyed out: the accent is the point of the card, and
-            washing it to grey would lose the only preview of the mood. */}
-        <View style={locked ? styles.characterLocked : undefined}>
-          <Character
-            size={CARD_CHARACTER_SIZE}
-            color={persona.accentColor}
-            // One breathing loop per card would read as four restless blobs.
-            animated={false}
-            // The Pressable already announces the persona name.
-            decorative
-          />
+    // The 48% width moves to the entrance wrapper, which is what the grid lays out
+    // now; the card fills it.
+    <FadeSlideIn index={index} style={styles.cardSlot}>
+      <PressableScale
+        accessibilityRole="radio"
+        accessibilityLabel={label}
+        accessibilityHint={
+          locked ? 'Opens the upgrade options' : 'Sets this mood as the one she speaks in'
+        }
+        accessibilityState={{ selected, disabled: pending, busy: pending }}
+        disabled={pending}
+        onPress={locked ? onLockedPress : onSelect}
+        style={[
+          styles.card,
+          // A 2px border is always present, transparent-to-border when inactive, so
+          // selecting a card recolours it rather than resizing the grid.
+          { borderColor: selected ? persona.accentColor : colors.border },
+          pending && styles.cardPending,
+        ]}
+      >
+        <View style={styles.characterWrap}>
+          {/* Dimmed rather than greyed out: the accent is the point of the card, and
+              washing it to grey would lose the only preview of the mood. */}
+          <View style={locked ? styles.characterLocked : undefined}>
+            <Character
+              size={CARD_CHARACTER_SIZE}
+              color={persona.accentColor}
+              // One breathing loop per card would read as four restless blobs.
+              animated={false}
+              // The Pressable already announces the persona name.
+              decorative
+            />
+          </View>
+
+          {locked ? (
+            <View style={styles.lockBadge}>
+              <LockIcon size={18} color={colors.primaryDark} />
+            </View>
+          ) : null}
         </View>
 
-        {locked ? (
-          <View style={styles.lockBadge}>
-            <LockIcon size={18} color={colors.primaryDark} />
-          </View>
-        ) : null}
-      </View>
+        <Text style={styles.cardName}>{persona.name}</Text>
 
-      <Text style={styles.cardName}>{persona.name}</Text>
-
-      {/* Always rendered, blank when there is nothing to say, so every card in a
-          row is the same height regardless of which one is active. */}
-      <Text
-        style={[styles.cardTag, selected && { color: persona.accentColor }]}
-        // The border and the name already carry the state visually; announcing
-        // "active" here would repeat what `accessibilityState` says.
-        accessibilityElementsHidden
-        importantForAccessibility="no"
-      >
-        {selected ? 'Active' : locked ? 'Premium' : ' '}
-      </Text>
-    </Pressable>
+        {/* Always rendered, blank when there is nothing to say, so every card in a
+            row is the same height regardless of which one is active. */}
+        <Text
+          style={[styles.cardTag, selected && { color: persona.accentColor }]}
+          // The border and the name already carry the state visually; announcing
+          // "active" here would repeat what `accessibilityState` says.
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+        >
+          {selected ? 'Active' : locked ? 'Premium' : ' '}
+        </Text>
+      </PressableScale>
+    </FadeSlideIn>
   );
 }
 
@@ -190,8 +202,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     rowGap: spacing.md,
   },
-  card: {
+  /**
+   * The grid cell. Holds the width because the entrance wrapper is what `grid`
+   * lays out; `space-between` then turns the leftover 4% into the gutter.
+   */
+  cardSlot: {
     width: '48%',
+  },
+  card: {
     backgroundColor: colors.card,
     borderRadius: radius.lg,
     borderWidth: 2,
@@ -202,9 +220,6 @@ const styles = StyleSheet.create({
   },
   cardPending: {
     opacity: 0.5,
-  },
-  pressed: {
-    opacity: 0.85,
   },
   characterWrap: {
     width: CARD_CHARACTER_SIZE,

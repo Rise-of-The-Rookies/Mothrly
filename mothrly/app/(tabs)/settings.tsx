@@ -1,9 +1,14 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { type PurchasesEntitlementInfo } from 'react-native-purchases';
 
-import { getPendingReminderCounts, sendTestNotification } from '@/lib/notifications';
+import PressableScale from '@/components/PressableScale';
+import {
+  getPendingReminderCounts,
+  isNotificationsAvailable,
+  sendTestNotification,
+} from '@/lib/notifications';
 import { type ReminderCategory } from '@/lib/reminderMessages';
 import { REMINDER_CATEGORIES, type TimeOfDay } from '@/lib/reminderSchedule';
 import {
@@ -74,6 +79,11 @@ function formatTimeOfDay({ hour, minute }: TimeOfDay): string {
 export default function SettingsScreen() {
   const [status, setStatus] = useState<string | null>(null);
   const [isScheduling, setIsScheduling] = useState(false);
+
+  // Fixed for the lifetime of the JS context — whether the native module loaded is
+  // decided once at startup — so it needs no state.
+  const notificationsAvailable = isNotificationsAvailable();
+  const testDisabled = isScheduling || !notificationsAvailable;
 
   // Backed by the SDK's CustomerInfo listener, so this row follows a purchase made
   // on the paywall without Settings having to re-read anything.
@@ -219,7 +229,7 @@ export default function SettingsScreen() {
           or Google Play, so cancelling and changing payment details happen there.
         </Text>
 
-        <Pressable
+        <PressableScale
           accessibilityRole="button"
           accessibilityLabel="Manage subscription"
           accessibilityHint={
@@ -233,7 +243,7 @@ export default function SettingsScreen() {
           }}
           disabled={isCheckingSubscription}
           onPress={handleManageSubscription}
-          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          style={styles.row}
         >
           <View style={styles.rowCopy}>
             <Text style={styles.rowLabel}>Manage subscription</Text>
@@ -248,17 +258,17 @@ export default function SettingsScreen() {
             </Text>
           </View>
           <Text style={styles.rowAction}>{isPremium ? 'Refresh' : 'View plans'}</Text>
-        </Pressable>
+        </PressableScale>
 
         {/* Stripped from release builds along with the branch: a console dump is a
             testing aid, not a setting. */}
         {__DEV__ ? (
-          <Pressable
+          <PressableScale
             accessibilityRole="button"
             accessibilityLabel="Log customer info to the console"
             accessibilityHint="Prints the RevenueCat customer info and active entitlements to the development console"
             onPress={handleLogCustomerInfo}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            style={styles.row}
           >
             <View style={styles.rowCopy}>
               <Text style={styles.rowLabel}>Log customer info</Text>
@@ -267,7 +277,7 @@ export default function SettingsScreen() {
               </Text>
             </View>
             <Text style={styles.rowAction}>Log</Text>
-          </Pressable>
+          </PressableScale>
         ) : null}
 
         {subscriptionNote ? (
@@ -284,8 +294,20 @@ export default function SettingsScreen() {
           plans a fresh batch. The count beside each row is what the OS actually has queued.
         </Text>
 
+        {/* The row is the control, not just the switch beside it. That is what lets
+            a press register as a press — a bare Switch has no surface to scale, and
+            its own platform feedback is the one mechanical-feeling thing left on
+            the screen. The Switch stays as the state readout: hidden from screen
+            readers and from touch, since the row now answers for both. */}
         {REMINDER_CATEGORIES.map((category) => (
-          <View key={category} style={styles.row}>
+          <PressableScale
+            key={category}
+            accessibilityRole="switch"
+            accessibilityLabel={`${CATEGORY_LABELS[category]} reminders`}
+            accessibilityState={{ checked: settingsFor[category].enabled }}
+            onPress={() => setEnabled(category, !settingsFor[category].enabled)}
+            style={styles.row}
+          >
             <View style={styles.rowCopy}>
               <Text style={styles.rowLabel}>{CATEGORY_LABELS[category]}</Text>
               <Text style={styles.rowHint}>
@@ -293,51 +315,58 @@ export default function SettingsScreen() {
                 {pending ? ` · ${pending[category] ?? 0} queued` : ''}
               </Text>
             </View>
-            <Switch
-              accessibilityLabel={`${CATEGORY_LABELS[category]} reminders`}
-              value={settingsFor[category].enabled}
-              onValueChange={(next) => setEnabled(category, next)}
-              trackColor={{ false: colors.border, true: colors.primary }}
-              thumbColor={colors.background}
-              ios_backgroundColor={colors.border}
-            />
-          </View>
+            <View
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              pointerEvents="none"
+            >
+              <Switch
+                value={settingsFor[category].enabled}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                thumbColor={colors.background}
+                ios_backgroundColor={colors.border}
+              />
+            </View>
+          </PressableScale>
         ))}
 
-        <Pressable
+        <PressableScale
           accessibilityRole="button"
           accessibilityLabel="Refresh pending notification counts"
           onPress={refreshPending}
-          style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+          style={styles.secondaryButton}
         >
           <Text style={styles.secondaryButtonLabel}>Refresh counts</Text>
-        </Pressable>
+        </PressableScale>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Notifications</Text>
         <Text style={styles.cardBody}>
-          Fires a test reminder 5 seconds from now so you can confirm delivery on a real device.
-          Tapping it should land you on Home.
+          {notificationsAvailable
+            ? 'Fires a test reminder 5 seconds from now so you can confirm delivery on a real device. Tapping it should land you on Home.'
+            : 'Expo Go on Android cannot deliver notifications — the store client dropped support in SDK 53. Reminders are switched off for this session; run a development build to test them.'}
         </Text>
 
-        <Pressable
+        {/* Disabled rather than hidden: a missing button reads as a bug, whereas a
+            disabled one with the reason above it explains itself. */}
+        <PressableScale
           accessibilityRole="button"
           accessibilityLabel="Send a test notification"
-          accessibilityHint="Schedules a notification to arrive in five seconds"
-          accessibilityState={{ disabled: isScheduling, busy: isScheduling }}
-          disabled={isScheduling}
+          accessibilityHint={
+            notificationsAvailable
+              ? 'Schedules a notification to arrive in five seconds'
+              : 'Unavailable in Expo Go on Android'
+          }
+          accessibilityState={{ disabled: testDisabled, busy: isScheduling }}
+          disabled={testDisabled}
           onPress={handleTestNotification}
-          style={({ pressed }) => [
-            styles.button,
-            pressed && styles.buttonPressed,
-            isScheduling && styles.buttonDisabled,
-          ]}
+          style={[styles.button, testDisabled && styles.buttonDisabled]}
         >
           <Text style={styles.buttonLabel}>
             {isScheduling ? 'Scheduling…' : 'Send test notification'}
           </Text>
-        </Pressable>
+        </PressableScale>
 
         {status ? (
           <Text accessibilityLiveRegion="polite" style={styles.status}>
@@ -409,9 +438,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.text,
   },
-  rowPressed: {
-    opacity: 0.85,
-  },
   /** The affordance on a row that goes somewhere, in place of a Switch. */
   rowAction: {
     fontFamily: fonts.bold,
@@ -426,9 +452,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 48,
-  },
-  buttonPressed: {
-    opacity: 0.85,
   },
   buttonDisabled: {
     opacity: 0.6,

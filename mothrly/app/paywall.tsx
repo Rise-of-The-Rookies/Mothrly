@@ -1,18 +1,20 @@
 import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { type PurchasesOffering, type PurchasesPackage } from 'react-native-purchases';
 import Animated, {
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import Character from '@/components/Character';
+import FadeSlideIn from '@/components/FadeSlideIn';
 import { CheckIcon, CloseIcon } from '@/components/Icons';
+import PressableScale from '@/components/PressableScale';
+import { motion, softInOut } from '@/lib/motion';
 import {
   callToActionLabel,
   equivalentMonthlyPriceString,
@@ -171,35 +173,49 @@ export default function PaywallScreen() {
     });
   }, []);
 
+  /**
+   * Bumped by {@link handleRetry}. A fetch whose attempt number has gone stale
+   * drops its result instead of writing it, which covers both the modal being
+   * dismissed mid-flight and a second retry started before the first came back —
+   * without that, a slow failure could land after a later success and put the
+   * screen back into its error state.
+   */
+  const attempt = useRef(0);
+
+  const loadOffering = useCallback(() => {
+    attempt.current += 1;
+    const thisAttempt = attempt.current;
+
+    // Written as promise callbacks rather than an awaited call so the state
+    // updates land in a callback from the store rather than synchronously — the
+    // same shape `usePremiumEntitlement` uses.
+    getCurrentOffering()
+      .then((current) => {
+        if (thisAttempt !== attempt.current) return;
+        applyOffering(current);
+      })
+      .catch((error: unknown) => {
+        if (thisAttempt !== attempt.current) return;
+        applyOfferingError(error);
+      });
+  }, [applyOffering, applyOfferingError]);
+
   useEffect(() => {
     // Nothing to fetch in a build that cannot buy anything — `initialOfferingState`
     // has already put the screen in its `unavailable` state.
     if (unavailableReason() !== null) return;
 
-    // `cancelled` covers the modal being dismissed mid-flight. Written as promise
-    // callbacks rather than an awaited call so the state updates land in a
-    // callback from the store rather than synchronously in the effect body —
-    // the same shape `usePremiumEntitlement` uses.
-    let cancelled = false;
+    loadOffering();
 
-    getCurrentOffering()
-      .then((current) => {
-        if (cancelled) return;
-        applyOffering(current);
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        applyOfferingError(error);
-      });
-
+    // Invalidates the in-flight attempt, so nothing writes state after unmount.
     return () => {
-      cancelled = true;
+      attempt.current += 1;
     };
-  }, [applyOffering, applyOfferingError]);
+  }, [loadOffering]);
 
   function handleRetry() {
     setOffering({ status: 'loading' });
-    getCurrentOffering().then(applyOffering).catch(applyOfferingError);
+    loadOffering();
   }
 
   const packages = offering.status === 'ready' ? offering.packages : null;
@@ -301,21 +317,17 @@ export default function PaywallScreen() {
       <View style={[styles.closeRow, { paddingTop: insets.top + spacing.sm }]}>
         {/* Locked while the store sheet is up: closing the screen out from under
             an in-flight purchase would unmount the code that handles its result. */}
-        <Pressable
+        <PressableScale
           accessibilityRole="button"
           accessibilityLabel="Close"
           accessibilityState={{ disabled: busy }}
           disabled={busy}
           hitSlop={spacing.sm}
           onPress={dismissPaywall}
-          style={({ pressed }) => [
-            styles.closeButton,
-            pressed && styles.pressed,
-            busy && styles.disabled,
-          ]}
+          style={[styles.closeButton, busy && styles.disabled]}
         >
           <CloseIcon size={22} color={colors.text} />
-        </Pressable>
+        </PressableScale>
       </View>
 
       <ScrollView
@@ -355,17 +367,13 @@ export default function PaywallScreen() {
             />
 
             {selected ? (
-              <Pressable
+              <PressableScale
                 accessibilityRole="button"
                 accessibilityLabel={callToActionLabel(selected)}
                 accessibilityState={{ disabled: busy, busy: isPurchasing }}
                 disabled={busy}
                 onPress={handlePurchase}
-                style={({ pressed }) => [
-                  styles.cta,
-                  pressed && styles.pressed,
-                  busy && styles.disabled,
-                ]}
+                style={[styles.cta, busy && styles.disabled]}
               >
                 {/* The button keeps its height either way, so swapping the label
                     for the spinner doesn't shift the layout below it. */}
@@ -374,7 +382,7 @@ export default function PaywallScreen() {
                 ) : (
                   <Text style={styles.ctaLabel}>{callToActionLabel(selected)}</Text>
                 )}
-              </Pressable>
+              </PressableScale>
             ) : null}
 
             {selected ? <CommitmentNote pkg={selected} /> : null}
@@ -382,7 +390,7 @@ export default function PaywallScreen() {
             {/* Offered even when the offering failed to load: someone who already
                 pays and reinstalled needs this to work regardless. */}
             {offering.status === 'unavailable' ? null : (
-              <Pressable
+              <PressableScale
                 accessibilityRole="button"
                 accessibilityLabel="Restore purchases"
                 accessibilityHint="Checks your store account for a subscription you already bought"
@@ -390,16 +398,12 @@ export default function PaywallScreen() {
                 disabled={busy}
                 hitSlop={spacing.sm}
                 onPress={handleRestore}
-                style={({ pressed }) => [
-                  styles.restore,
-                  pressed && styles.pressed,
-                  busy && styles.disabled,
-                ]}
+                style={[styles.restore, busy && styles.disabled]}
               >
                 <Text style={styles.restoreLabel}>
                   {isRestoring ? 'Checking…' : 'Restore purchases'}
                 </Text>
-              </Pressable>
+              </PressableScale>
             )}
 
             {notice ? (
@@ -465,37 +469,36 @@ function PlanSection({
     );
   }
 
-  if (offering.status === 'empty') {
-    return (
-      <View style={styles.placeholder}>
-        <Text style={styles.placeholderText}>
-          There are no plans on offer right now. Please try again later.
-        </Text>
-      </View>
-    );
-  }
-
-  if (offering.status === 'error') {
+  // Both remaining failure modes are recoverable, so both get the same retry.
+  // `empty` used to be a dead end, which was wrong: a dashboard whose offering is
+  // mid-edit, or a response that arrived partial, both land here and both come
+  // good on a second attempt.
+  if (offering.status === 'empty' || offering.status === 'error') {
     return (
       <View accessibilityLiveRegion="polite" style={styles.placeholder}>
-        <Text style={styles.placeholderText}>{offering.message}</Text>
-        <Pressable
+        <Text style={styles.placeholderText}>
+          {offering.status === 'error'
+            ? offering.message
+            : "Couldn't load plans right now. There may be nothing on offer yet."}
+        </Text>
+        <PressableScale
           accessibilityRole="button"
           accessibilityLabel="Try again"
           onPress={onRetry}
-          style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+          style={styles.retryButton}
         >
           <Text style={styles.retryLabel}>Try again</Text>
-        </Pressable>
+        </PressableScale>
       </View>
     );
   }
 
   return (
     <View accessibilityRole="radiogroup" style={styles.planRow}>
-      {offering.packages.map((pkg) => (
+      {offering.packages.map((pkg, index) => (
         <PlanCard
           key={pkg.identifier}
+          index={index}
           pkg={pkg}
           selected={pkg.identifier === selectedId}
           isBestValue={pkg.identifier === bestValue?.identifier}
@@ -509,6 +512,8 @@ function PlanSection({
 
 type PlanCardProps = {
   pkg: PurchasesPackage;
+  /** Position in the row's entrance cascade. */
+  index: number;
   selected: boolean;
   isBestValue: boolean;
   disabled: boolean;
@@ -522,7 +527,7 @@ type PlanCardProps = {
  * localised, and re-deriving either from the numeric price is how a paywall ends
  * up showing the wrong currency.
  */
-function PlanCard({ pkg, selected, isBestValue, disabled, onSelect }: PlanCardProps) {
+function PlanCard({ pkg, index, selected, isBestValue, disabled, onSelect }: PlanCardProps) {
   const monthlyEquivalent = equivalentMonthlyPriceString(pkg);
   const offer = packageOffer(pkg);
 
@@ -543,43 +548,47 @@ function PlanCard({ pkg, selected, isBestValue, disabled, onSelect }: PlanCardPr
     .join(', ');
 
   return (
-    <Pressable
-      accessibilityRole="radio"
-      accessibilityLabel={label}
-      accessibilityState={{ selected, disabled }}
-      disabled={disabled}
-      onPress={onSelect}
-      style={({ pressed }) => [
-        styles.planCard,
-        // The border is always 2px and only changes colour, so selecting a plan
-        // recolours the card instead of resizing the row.
-        selected && styles.planCardSelected,
-        pressed && styles.pressed,
-      ]}
-    >
-      {/* Reserved on every card so the titles line up whether or not a badge is
-          present, without positioning the badge outside the card. */}
-      <View style={styles.badgeSlot}>
-        {isBestValue ? (
-          <View style={styles.badge}>
-            <Text style={styles.badgeLabel}>Best value</Text>
-          </View>
+    // Prices arrive from the store a moment after the screen opens, so the cards
+    // are the one thing here that genuinely appears. The flex sizing moves to the
+    // wrapper, which is what `planRow` lays out now.
+    <FadeSlideIn index={index} style={styles.planSlot}>
+      <PressableScale
+        accessibilityRole="radio"
+        accessibilityLabel={label}
+        accessibilityState={{ selected, disabled }}
+        disabled={disabled}
+        onPress={onSelect}
+        style={[
+          styles.planCard,
+          // The border is always 2px and only changes colour, so selecting a plan
+          // recolours the card instead of resizing the row.
+          selected && styles.planCardSelected,
+        ]}
+      >
+        {/* Reserved on every card so the titles line up whether or not a badge is
+            present, without positioning the badge outside the card. */}
+        <View style={styles.badgeSlot}>
+          {isBestValue ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeLabel}>Best value</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <Text style={styles.planTitle}>{pkg.product.title}</Text>
+        <Text style={styles.planPrice}>{pkg.product.priceString}</Text>
+
+        {monthlyEquivalent ? (
+          <Text style={styles.planDetail}>{monthlyEquivalent} / month</Text>
         ) : null}
-      </View>
 
-      <Text style={styles.planTitle}>{pkg.product.title}</Text>
-      <Text style={styles.planPrice}>{pkg.product.priceString}</Text>
-
-      {monthlyEquivalent ? (
-        <Text style={styles.planDetail}>{monthlyEquivalent} / month</Text>
-      ) : null}
-
-      {offer.hasFreeTrial ? (
-        <Text style={styles.planTrial}>
-          {offer.freeTrialLength ? `${offer.freeTrialLength} free` : 'Free trial'}
-        </Text>
-      ) : null}
-    </Pressable>
+        {offer.hasFreeTrial ? (
+          <Text style={styles.planTrial}>
+            {offer.freeTrialLength ? `${offer.freeTrialLength} free` : 'Free trial'}
+          </Text>
+        ) : null}
+      </PressableScale>
+    </FadeSlideIn>
   );
 }
 
@@ -612,21 +621,25 @@ function CommitmentNote({ pkg }: { pkg: PurchasesPackage }) {
  * the persona picker with Funny and Motivational already unlocked, rather than
  * having to dismiss a screen to find out whether it worked.
  *
- * The tick springs in, which is the whole animation. There is no progress to
- * convey and the screen is about to leave, so anything longer would be in the way.
+ * The tick grows in, which is the whole animation. There is no progress to convey
+ * and the screen is about to leave, so anything longer would be in the way.
  */
 function PurchaseSuccess() {
   // An idle flourish is exactly what this setting is for, so with reduced motion
   // the tick is simply already there.
   const reducedMotion = useReducedMotion();
-  const scale = useSharedValue(reducedMotion ? 1 : 0.6);
+  const scale = useSharedValue(reducedMotion ? 1 : 0.82);
   const opacity = useSharedValue(reducedMotion ? 1 : 0);
 
   useEffect(() => {
     if (reducedMotion) return;
 
-    scale.value = withSpring(1, { damping: 11, stiffness: 180 });
-    opacity.value = withTiming(1, { duration: 180 });
+    // Was an under-damped spring, which popped past full size and settled back —
+    // the one genuinely cartoonish moment in the app. Now it grows into place and
+    // stops. Starting at 0.82 rather than 0.6 keeps the growth gentle over the
+    // same duration, so losing the overshoot doesn't make it feel sluggish.
+    scale.value = withTiming(1, { duration: motion.entrance.duration, easing: softInOut });
+    opacity.value = withTiming(1, { duration: motion.entrance.duration, easing: softInOut });
   }, [opacity, reducedMotion, scale]);
 
   const tickStyle = useAnimatedStyle(() => ({
@@ -665,14 +678,14 @@ function PremiumConfirmation() {
         the very next reminder.
       </Text>
 
-      <Pressable
+      <PressableScale
         accessibilityRole="button"
         accessibilityLabel="Done"
         onPress={() => router.back()}
-        style={({ pressed }) => [styles.cta, styles.ctaStretch, pressed && styles.pressed]}
+        style={[styles.cta, styles.ctaStretch]}
       >
         <Text style={styles.ctaLabel}>Done</Text>
-      </Pressable>
+      </PressableScale>
     </View>
   );
 }
@@ -742,9 +755,17 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.xs,
   },
-  planCard: {
+  /**
+   * The row's flex child: the entrance wrapper, not the card. Holds the sizing so
+   * two plans still share a row and a third still wraps.
+   */
+  planSlot: {
     flexGrow: 1,
     flexBasis: '45%',
+  },
+  planCard: {
+    // Fills the slot above, which is what carries the flex sizing now.
+    flex: 1,
     backgroundColor: colors.card,
     borderRadius: radius.lg,
     borderWidth: 2,

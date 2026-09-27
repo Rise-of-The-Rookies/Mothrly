@@ -1,19 +1,19 @@
 import { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  Easing,
   interpolate,
   runOnJS,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import Character from './Character';
+import PressableScale from './PressableScale';
 
+import { motion, softInOut, softOut } from '@/lib/motion';
 import { colors, fonts, radius, spacing } from '@/lib/theme';
 import useSuperviseStore, { formatMinutes, isNudgeFresh } from '@/store/superviseStore';
 
@@ -29,14 +29,16 @@ import useSuperviseStore, { formatMinutes, isNudgeFresh } from '@/store/supervis
  * the user is on any tab.
  */
 
-/** Spring that brings the card up. Slightly soft, to stay in character. */
-const ENTER_SPRING = { damping: 18, stiffness: 180, mass: 0.9 } as const;
-
-/** Exit is a plain fade-down — quicker than the entrance, so dismissing feels crisp. */
-const EXIT_MS = 180;
-
-/** How far the card travels on its way in. */
-const TRAVEL = 48;
+/**
+ * Durations and travel come from `lib/motion.ts`.
+ *
+ * The entrance used to be a spring. It has been replaced with an eased timing
+ * curve deliberately: even a well-damped spring overshoots, and an overshoot on
+ * the one surface that interrupts the user is where the app started to feel
+ * cartoonish. A 340ms ease-in-out arrives with the same weight and then simply
+ * stops.
+ */
+const TRAVEL = motion.nudge.travel;
 
 export default function SuperviseNudgeAlert() {
   const insets = useSafeAreaInsets();
@@ -69,15 +71,11 @@ export default function SuperviseNudgeAlert() {
       return;
     }
 
-    progress.value = withTiming(
-      0,
-      { duration: EXIT_MS, easing: Easing.out(Easing.quad) },
-      (finished) => {
-        // Skipped when a new nudge interrupted the exit — that animation now
-        // owns `progress`, and clearing the store would drop its nudge.
-        if (finished) runOnJS(dismissNudge)();
-      },
-    );
+    progress.value = withTiming(0, { duration: motion.nudge.exit, easing: softOut }, (finished) => {
+      // Skipped when a new nudge interrupted the exit — that animation now
+      // owns `progress`, and clearing the store would drop its nudge.
+      if (finished) runOnJS(dismissNudge)();
+    });
   }
 
   // Animates in whenever a nudge appears. No exit branch here: dismissal plays
@@ -85,7 +83,9 @@ export default function SuperviseNudgeAlert() {
   // time `nudge` goes null the card is already invisible and can just unmount.
   useEffect(() => {
     if (!nudge) return;
-    progress.value = reducedMotion ? 1 : withSpring(1, ENTER_SPRING);
+    progress.value = reducedMotion
+      ? 1
+      : withTiming(1, { duration: motion.nudge.enter, easing: softInOut });
   }, [nudge, progress, reducedMotion]);
 
   const backdropStyle = useAnimatedStyle(() => ({
@@ -138,23 +138,23 @@ export default function SuperviseNudgeAlert() {
 
           <Text style={styles.message}>{nudge.message}</Text>
 
-          <Pressable
+          <PressableScale
             accessibilityRole="button"
             accessibilityLabel="Alright, putting it down"
             onPress={dismiss}
-            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+            style={styles.primaryButton}
           >
             <Text style={styles.primaryLabel}>Alright, putting it down</Text>
-          </Pressable>
+          </PressableScale>
 
-          <Pressable
+          <PressableScale
             accessibilityRole="button"
             accessibilityLabel="Five more minutes"
             onPress={dismiss}
-            style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+            style={styles.secondaryButton}
           >
             <Text style={styles.secondaryLabel}>Five more minutes</Text>
-          </Pressable>
+          </PressableScale>
         </View>
       </Animated.View>
     </View>
@@ -248,8 +248,5 @@ const styles = StyleSheet.create({
     color: colors.primaryDark,
     fontFamily: fonts.bold,
     fontSize: 15,
-  },
-  pressed: {
-    opacity: 0.85,
   },
 });

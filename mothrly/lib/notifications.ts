@@ -1,4 +1,8 @@
-import * as Notifications from 'expo-notifications';
+// Type-only, so this import is erased at compile time and never evaluates the
+// module. That distinction is the whole reason this file is shaped the way it is
+// — see `loadNotifications` below.
+import type * as NotificationsModule from 'expo-notifications';
+import { isRunningInExpoGo } from 'expo';
 import { Platform } from 'react-native';
 
 import { colors } from './theme';
@@ -12,6 +16,12 @@ import { isPersonaId, type PersonaId } from '@/data/personas';
  * permissions, or the platform rejects a schedule request, the functions log
  * and resolve with a falsy value rather than throwing. Callers never need to
  * wrap these in try/catch to keep the app alive.
+ *
+ * This module is the *only* place that touches `expo-notifications`. Anything
+ * else needing notifications goes through the functions exported here, for the
+ * same reason `lib/usageStats.ts` owns `expo-android-usagestats`: the dependency
+ * is not always loadable, and one guarded entry point is far easier to reason
+ * about than a guard at every call site.
  */
 
 /** Android notification channel that all reminders are posted to. */
@@ -58,11 +68,63 @@ let initPromise: Promise<boolean> | null = null;
 let permissionGranted = false;
 
 /**
+ * Loads `expo-notifications`, or returns `null` where it cannot be loaded.
+ *
+ * Deliberately a `require` inside a guard rather than a static import, and not
+ * for the usual reason. `expo-notifications` does not merely fail when its push
+ * features are used in Expo Go on Android — **importing it throws**. Its barrel
+ * re-exports `DevicePushTokenAutoRegistration.fx`, whose module body calls
+ * `addPushTokenListener()` at the top level, and that in turn calls a guard which
+ * throws outright on Android under Expo Go (SDK 53 removed remote notifications
+ * from Expo Go). So the error arrives while the module graph is still being
+ * evaluated, long before any of our code runs, and it takes the whole app down at
+ * launch. No amount of guarding *our* calls helps; the import itself is the
+ * problem, which is why it has to be deferred behind this check.
+ *
+ * `isRunningInExpoGo` is the same predicate expo-notifications uses internally,
+ * so this cannot disagree with the condition it is avoiding.
+ *
+ * Every consequence of returning `null` is a feature switching itself off, never
+ * an error: reminders are not scheduled, permission reads as denied, and the Home
+ * screen already has a state for exactly that.
+ */
+function loadNotifications(): typeof NotificationsModule | null {
+  if (Platform.OS === 'android' && isRunningInExpoGo()) {
+    console.log(
+      '[notifications] Expo Go on Android cannot load expo-notifications ' +
+        '(remote notifications were removed from Expo Go in SDK 53). Reminders ' +
+        'are switched off for this session — run a development build to test them.',
+    );
+    return null;
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('expo-notifications') as typeof NotificationsModule;
+  } catch (error) {
+    console.warn('[notifications] expo-notifications could not be loaded', error);
+    return null;
+  }
+}
+
+const Notifications = loadNotifications();
+
+/**
+ * Whether notifications can work in this build at all.
+ *
+ * False in Expo Go on Android. Check it before showing UI that offers to send or
+ * schedule anything, so the user is not handed a button that cannot work.
+ */
+export function isNotificationsAvailable(): boolean {
+  return Notifications !== null;
+}
+
+/**
  * Foreground presentation behaviour. Without this, notifications that fire
  * while the app is open are delivered silently and never reach the tray, which
  * makes the test button look broken.
  */
-Notifications.setNotificationHandler({
+Notifications?.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
     shouldShowList: true,
@@ -73,6 +135,7 @@ Notifications.setNotificationHandler({
 
 /** Creates (or updates) the `reminders` channel. Android-only; no-op elsewhere. */
 async function createRemindersChannel(): Promise<void> {
+  if (!Notifications) return;
   if (Platform.OS !== 'android') return;
 
   try {
@@ -104,6 +167,12 @@ async function createRemindersChannel(): Promise<void> {
  */
 export function initNotifications(): Promise<boolean> {
   initPromise ??= (async () => {
+    // Nothing to ask for, and nothing to ask with.
+    if (!Notifications) {
+      permissionGranted = false;
+      return false;
+    }
+
     // The channel must exist before the permission prompt on Android, otherwise
     // the prompt has no channel to attribute the request to.
     await createRemindersChannel();
@@ -147,6 +216,33 @@ export function hasNotificationPermission(): boolean {
 }
 
 /**
+ * Re-reads the current permission state without ever prompting.
+ *
+ * {@link initNotifications} memoises its whole body, so once it has run it cannot
+ * tell you that the user has since revoked notifications in system settings —
+ * which they can do at any time, and which silently stops every reminder. This is
+ * the read to use for anything that reports permission state in the UI.
+ *
+ * Never throws; a platform with no notifications implementation reads as denied.
+ */
+export async function checkNotificationPermission(): Promise<boolean> {
+  if (!Notifications) {
+    permissionGranted = false;
+    return false;
+  }
+
+  try {
+    const { granted } = await Notifications.getPermissionsAsync();
+    permissionGranted = granted;
+    return granted;
+  } catch (error) {
+    console.warn('[notifications] Permission re-check failed', error);
+    permissionGranted = false;
+    return false;
+  }
+}
+
+/**
  * Schedules a one-off reminder.
  *
  * @param type      Reminder category. Determines the notification title and is
@@ -167,7 +263,9 @@ export async function scheduleReminder(
   personaId?: PersonaId,
 ): Promise<string | null> {
   const granted = await initNotifications();
-  if (!granted) {
+  // Covers both "denied" and "not available in this build" — `initNotifications`
+  // resolves false for either, and the narrowing below needs `Notifications` too.
+  if (!granted || !Notifications) {
     console.log(`[notifications] Skipping "${type}" reminder — no permission.`);
     return null;
   }
@@ -216,6 +314,8 @@ export async function scheduleReminder(
  * unknown or already fired.
  */
 export async function cancelReminder(id: string): Promise<void> {
+  if (!Notifications) return;
+
   try {
     await Notifications.cancelScheduledNotificationAsync(id);
   } catch (error) {
@@ -225,6 +325,8 @@ export async function cancelReminder(id: string): Promise<void> {
 
 /** Cancels every reminder this app has scheduled. */
 export async function cancelAllReminders(): Promise<void> {
+  if (!Notifications) return;
+
   try {
     await Notifications.cancelAllScheduledNotificationsAsync();
   } catch (error) {
@@ -278,7 +380,7 @@ function isReminderType(value: unknown): value is ReminderType {
  * Returns `null` for anything we did not schedule — the payload shape is the
  * only thing marking a notification as ours.
  */
-function toFiredReminder(notification: Notifications.Notification): FiredReminder | null {
+function toFiredReminder(notification: NotificationsModule.Notification): FiredReminder | null {
   const { content } = notification.request;
   const type: unknown = content.data?.type;
 
@@ -310,8 +412,11 @@ function toFiredReminder(notification: Notifications.Notification): FiredReminde
  */
 export function addReminderDeliveryListener(
   handler: (fired: FiredReminder) => void,
-): Notifications.EventSubscription {
-  const forward = (notification: Notifications.Notification) => {
+): NotificationsModule.EventSubscription {
+  // A no-op subscription rather than null, so callers keep one shape to clean up.
+  if (!Notifications) return { remove: () => {} };
+
+  const forward = (notification: NotificationsModule.Notification) => {
     const fired = toFiredReminder(notification);
     if (fired) handler(fired);
   };
@@ -329,6 +434,52 @@ export function addReminderDeliveryListener(
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Notification taps                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The deep-link target a notification asks to open.
+ *
+ * Reminders scheduled by {@link scheduleReminder} always carry a `url`, but a
+ * notification could arrive from elsewhere, so this falls back to {@link HOME_ROUTE}.
+ */
+export function routeForNotification(notification: NotificationsModule.Notification): string {
+  const url = notification.request.content.data?.url;
+  return typeof url === 'string' && url.length > 0 ? url : HOME_ROUTE;
+}
+
+/**
+ * The tap that launched the app, if the app was started by one.
+ *
+ * Available synchronously on first render. Clearing it is the caller's job — see
+ * {@link clearInitialNotificationResponse} — so a remount does not navigate twice.
+ */
+export function getInitialNotificationResponse(): NotificationsModule.NotificationResponse | null {
+  return Notifications?.getLastNotificationResponse() ?? null;
+}
+
+/** Forgets the cold-start tap, so a later remount does not replay it. */
+export function clearInitialNotificationResponse(): void {
+  Notifications?.clearLastNotificationResponse();
+}
+
+/**
+ * Subscribes to the user tapping a notification while the app is running.
+ *
+ * Returns a no-op subscription where notifications are unavailable, so the caller
+ * needs no branch of its own.
+ */
+export function addNotificationTapListener(
+  handler: (notification: NotificationsModule.Notification) => void,
+): NotificationsModule.EventSubscription {
+  if (!Notifications) return { remove: () => {} };
+
+  return Notifications.addNotificationResponseReceivedListener((response) => {
+    handler(response.notification);
+  });
+}
+
 /**
  * How many notifications are currently pending per reminder type.
  *
@@ -341,6 +492,9 @@ export async function getPendingReminderCounts(): Promise<Record<ReminderType, n
     ReminderType,
     number
   >;
+
+  // All zeros is the honest answer when there is no queue to read.
+  if (!Notifications) return counts;
 
   try {
     const pending = await Notifications.getAllScheduledNotificationsAsync();

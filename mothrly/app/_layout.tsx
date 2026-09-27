@@ -15,6 +15,7 @@ import { configureRevenueCat } from '@/lib/revenuecat';
 import { useNotificationRouting } from '@/lib/useNotificationRouting';
 import { useReminderDelivery } from '@/lib/useReminderDelivery';
 import { useUsageSync } from '@/lib/useUsageSync';
+import useOnboardingStore from '@/store/onboardingStore';
 import { refreshAllReminders } from '@/store/reminderStore';
 
 // Configure RevenueCat once, at module load, before any screen renders.
@@ -45,9 +46,14 @@ export default function RootLayout() {
     Nunito_700Bold,
   });
 
-  // Requests notification permission on first launch and sends notification
-  // taps to the Home screen.
+  // Sends notification taps to the Home screen. Note that this no longer asks
+  // for permission — onboarding owns that prompt now, so it arrives with the
+  // explanation next to it instead of on a cold start.
   useNotificationRouting();
+
+  // Decides which half of the app is reachable. Read synchronously from storage
+  // at module load, so the first frame is already the right screen.
+  const hasOnboarded = useOnboardingStore((state) => state.hasOnboarded);
 
   // Records deliveries here rather than on Home, so a reminder that arrives
   // while the user is on another tab is still captured.
@@ -84,10 +90,28 @@ export default function RootLayout() {
 
   return (
     <View style={{ flex: 1 }}>
+      {/*
+        Onboarding and the app proper are mutually exclusive, and each guard is
+        also the redirect: when a screen's guard turns false the router sends the
+        user to the first *available* screen in the stack. Declaring onboarding
+        first is what makes that deterministic — on a first launch the tab group
+        is unreachable and onboarding is the fallback; the moment `hasOnboarded`
+        flips, onboarding drops out of the stack (history and all) and the tab
+        group becomes the fallback, landing on Home.
+
+        `redirectTo` would say this more plainly, but it needs SDK 58 and this
+        project is on 57.
+      */}
       <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="paywall" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="usage-access" options={{ presentation: 'modal' }} />
+        <Stack.Protected guard={!hasOnboarded}>
+          <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
+        </Stack.Protected>
+
+        <Stack.Protected guard={hasOnboarded}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="paywall" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="usage-access" options={{ presentation: 'modal' }} />
+        </Stack.Protected>
       </Stack>
 
       {/* Above the navigator rather than inside a screen, so a nudge raised on

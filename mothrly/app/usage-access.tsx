@@ -1,7 +1,8 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import PressableScale from '@/components/PressableScale';
 import { colors, fonts, radius, spacing } from '@/lib/theme';
 import { openUsageAccessSettings } from '@/lib/usageStats';
 import { useUsageAccess } from '@/lib/useUsageSync';
@@ -72,30 +73,26 @@ export default function UsageAccessScreen() {
           </Text>
         </View>
       ) : (
-        <Pressable
+        <PressableScale
           accessibilityRole="button"
           accessibilityLabel="Open usage access settings"
           accessibilityState={{ disabled: opening, busy: opening }}
           disabled={opening}
           onPress={handleOpenSettings}
-          style={({ pressed }) => [
-            styles.button,
-            pressed && styles.buttonPressed,
-            opening && styles.buttonDisabled,
-          ]}
+          style={[styles.button, opening && styles.buttonDisabled]}
         >
           <Text style={styles.buttonLabel}>{opening ? 'Opening…' : 'Open system settings'}</Text>
-        </Pressable>
+        </PressableScale>
       )}
 
-      <Pressable
+      <PressableScale
         accessibilityRole="button"
         accessibilityLabel={granted ? 'Done' : 'Not now'}
         onPress={() => router.back()}
-        style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+        style={styles.secondaryButton}
       >
         <Text style={styles.secondaryLabel}>{granted ? 'Done' : 'Not now'}</Text>
-      </Pressable>
+      </PressableScale>
 
       <Text style={styles.footnote}>
         Without it, supervise mode still works — it just runs on the placeholder times.
@@ -152,9 +149,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 48,
-  },
-  buttonPressed: {
-    opacity: 0.85,
   },
   buttonDisabled: {
     opacity: 0.6,

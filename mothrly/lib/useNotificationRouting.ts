@@ -1,59 +1,60 @@
-import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { useEffect } from 'react';
 
-import { HOME_ROUTE, initNotifications } from './notifications';
+import {
+  addNotificationTapListener,
+  clearInitialNotificationResponse,
+  getInitialNotificationResponse,
+  routeForNotification,
+} from './notifications';
 
 /**
- * Pulls the deep-link target out of a notification payload.
- *
- * Reminders scheduled by `scheduleReminder` always carry a `url`, but a
- * notification could also arrive from elsewhere, so fall back to Home.
- */
-function routeFor(notification: Notifications.Notification): string {
-  const url = notification.request.content.data?.url;
-  return typeof url === 'string' && url.length > 0 ? url : HOME_ROUTE;
-}
-
-/**
- * Requests notification permission on launch and routes notification taps.
+ * Routes notification taps to the screen the payload asks for.
  *
  * Handles both entry points:
  * - cold start, where the tap happened before React mounted and is replayed by
- *   `getLastNotificationResponse`
- * - warm taps while the app is already running, via the response listener
+ *   the initial-response read
+ * - warm taps while the app is already running, via the tap listener
+ *
+ * Deliberately does *not* ask for notification permission. That used to happen
+ * here, which meant the OS dialog appeared on the first cold start with no
+ * context around it. The onboarding screen owns the prompt now — see
+ * `app/onboarding.tsx` — so the ask arrives attached to the slide that explains
+ * why it is being made.
+ *
+ * Note that nothing here imports `expo-notifications`. It goes through
+ * `lib/notifications.ts` instead, which owns the one guarded reference to that
+ * module — importing it directly is what used to crash the app at launch in Expo
+ * Go on Android. Both helpers below degrade to doing nothing there.
  *
  * Mount this once from the root layout.
  */
 export function useNotificationRouting(): void {
   useEffect(() => {
-    // Fire and forget — initNotifications handles its own errors and never rejects.
-    initNotifications();
-
     let handledColdStart = false;
 
-    const open = (notification: Notifications.Notification) => {
-      // `navigate` rather than `push` so a tap doesn't stack duplicate Home
-      // screens if the user taps several reminders in a row.
-      router.navigate(routeFor(notification));
+    // `navigate` rather than `push` so a tap doesn't stack duplicate Home
+    // screens if the user taps several reminders in a row.
+    const open = (route: string) => {
+      router.navigate(route);
     };
 
     // A tap that launched the app is available synchronously on first render.
-    const initial = Notifications.getLastNotificationResponse();
+    const initial = getInitialNotificationResponse();
     if (initial?.notification) {
       handledColdStart = true;
-      open(initial.notification);
+      open(routeForNotification(initial.notification));
       // Clear it so a later remount doesn't navigate again.
-      Notifications.clearLastNotificationResponse();
+      clearInitialNotificationResponse();
     }
 
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    const subscription = addNotificationTapListener((notification) => {
       // The listener also replays the cold-start response on some platforms.
       if (handledColdStart) {
         handledColdStart = false;
         return;
       }
-      open(response.notification);
+      open(routeForNotification(notification));
     });
 
     return () => {

@@ -1,0 +1,16 @@
+{
+  "$comment": "Mothrly's character geometry, in one place. Consumed by components/Character.tsx at runtime and by scripts/generate-icon.js at build time, so the app icon and the on-screen character can never drift apart. JSON rather than a .ts module so the Node script can read it with fs.readFileSync and no transpiler. Coordinates are in the viewBox space below. The body path uses only M, C and Z commands — scripts/generate-icon.js parses it to find the silhouette's bounding box and will refuse anything else.",
+  "viewBox": {
+    "width": 200,
+    "height": 200
+  },
+  "body": "M100 16 C138 14 178 42 182 88 C186 134 156 178 106 183 C64 187 24 158 18 112 C12 66 46 18 100 16 Z",
+  "eyes": [
+    { "cx": 78, "cy": 94, "r": 7.5 },
+    { "cx": 122, "cy": 94, "r": 7.5 }
+  ],
+  "smile": {
+    "d": "M80 124 Q100 142 120 124",
+    "strokeWidth": 5
+  }
+}

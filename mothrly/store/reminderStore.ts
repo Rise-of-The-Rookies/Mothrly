@@ -162,11 +162,24 @@ const useReminderStore = create<ReminderStore>()(
         if (get().hasCompletedSetup) return Promise.resolve();
 
         setupPromise ??= (async () => {
-          // Prompts on first launch only; the OS short-circuits it afterwards.
-          // Neither call rejects, so there is no failure path to cache here.
-          await initNotifications();
-          await get().refreshAll();
-          set({ hasCompletedSetup: true });
+          try {
+            // Prompts on first launch only; the OS short-circuits it afterwards.
+            await initNotifications();
+            // Set before refreshing, not after: `reschedule` refuses to run until
+            // this flag is true, so the order here is what lets the first batch
+            // through.
+            set({ hasCompletedSetup: true });
+            await get().refreshAll();
+          } catch (error) {
+            // Resolves rather than rejects, for two reasons. A rejection here
+            // would be unhandled at most call sites — Home calls this from a
+            // mount effect — and, worse, `setupPromise` caches whatever this
+            // returns, so a rejected promise would be handed to every later
+            // caller for the rest of the session. Clearing it instead lets the
+            // next call genuinely retry.
+            console.warn('[reminders] First-launch setup did not complete', error);
+            setupPromise = null;
+          }
         })();
 
         return setupPromise;
@@ -272,6 +285,14 @@ async function cancelAll(ids: readonly string[]): Promise<void> {
  * refresh retries.
  */
 async function reschedule(category: ReminderCategory): Promise<void> {
+  // Nothing is scheduled before setup has completed. `scheduleReminder` asks for
+  // notification permission as its first step, so a launch-time refresh would
+  // otherwise raise the OS dialog during onboarding — ahead of the slide that
+  // explains it, and ahead of the button that is supposed to trigger it.
+  // `completeSetup` sets this flag itself and then calls `refreshAll`, which is
+  // how the first batch gets planned.
+  if (!useReminderStore.getState().hasCompletedSetup) return;
+
   generations[category] += 1;
   const generation = generations[category];
 
@@ -321,7 +342,16 @@ async function reschedule(category: ReminderCategory): Promise<void> {
  * every launch, and the intended way to keep recurring reminders topped up.
  */
 export function refreshAllReminders(): Promise<void> {
-  return useReminderStore.getState().refreshAll();
+  // Swallows rather than propagates. Every caller is a fire-and-forget launch
+  // effect, so a rejection would surface as an unhandled promise rejection rather
+  // than anywhere it could be handled — and `reschedule` failing is already
+  // survivable: the batch stays short and the next refresh retries it.
+  return useReminderStore
+    .getState()
+    .refreshAll()
+    .catch((error: unknown) => {
+      console.warn('[reminders] Refreshing the scheduled batch failed', error);
+    });
 }
 
 /* -------------------------------------------------------------------------- */
