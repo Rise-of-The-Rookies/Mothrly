@@ -5,17 +5,18 @@ import { activePersonaId } from '@/store/personaStore';
 import useReminderStore from '@/store/reminderStore';
 import useSuperviseStore, {
   formatMinutes,
+  isNudgeFresh,
   type SuperviseNudgeSource,
 } from '@/store/superviseStore';
 
 /**
- * The one way a supervise-mode nudge is raised.
+ * How a supervise-mode nudge is raised.
  *
- * Real usage detection is not wired up yet, so today the only caller is the
- * hidden demo menu on the Supervise screen. That is deliberate: when detection
- * does land it calls this same function, which means everything downstream —
- * the copy, the persisted nudge, the alert animation, the tray notification —
- * is already the real path rather than a demo look-alike.
+ * {@link triggerSuperviseNudge} is the single way a nudge reaches the user, and
+ * the two callers share it: {@link evaluateSuperviseNudges}, which runs after
+ * every usage read, and the hidden demo menu on the Supervise screen. A demo
+ * nudge is therefore the real flow with a scripted input rather than a
+ * look-alike.
  */
 
 /**
@@ -116,4 +117,95 @@ export function triggerSuperviseNudge(
 
   console.log(`[supervise] Nudge raised for ${app.name} at ${timeLabel} (${source})`);
   return 'raised';
+}
+
+/** What a detection pass decided, beyond the outcomes a trigger itself can have. */
+export type SuperviseEvaluation =
+  | SuperviseTriggerResult
+  /**
+   * No tracked app has reached a threshold multiple that has not already been
+   * nudged about today.
+   */
+  | 'no-candidate'
+  /** The counters are still seeded or demo values, so there is nothing to judge. */
+  | 'not-measured'
+  /** A nudge is already on screen waiting to be answered. */
+  | 'nudge-pending';
+
+/**
+ * Checks the current usage counters against each app's threshold and raises a
+ * nudge if one is due.
+ *
+ * Call this after writing fresh usage data into the store — a measurement is the
+ * only thing that can newly cross a threshold, so `syncUsageMinutes` is the
+ * natural and only caller.
+ *
+ * Nudges escalate at whole multiples of the threshold. An app with a 15-minute
+ * threshold is nudged about at 15 minutes, again at 30, again at 45 — each
+ * multiple once. {@link SuperviseStore.lastNudgedLevel} records how far up that
+ * ladder Mothrly has already spoken, which is what makes the difference between
+ * escalating and repeating: usage is re-read on every foreground, so an app over
+ * its threshold stays over it until midnight, and without the record every switch
+ * back to Mothrly would raise the same nudge again.
+ *
+ * At most one nudge per pass. `activeNudge` holds a single nudge, so raising two
+ * would mean the second silently replacing the first while both notifications went
+ * out. When several apps are due, the one at the highest level wins, since that is
+ * the furthest past what its own threshold said was reasonable; ties go to the app
+ * with more minutes over.
+ *
+ * @returns why nothing happened, or `raised` when a nudge went out.
+ */
+export function evaluateSuperviseNudges(): SuperviseEvaluation {
+  if (!useReminderStore.getState().superviseMode) return 'supervise-off';
+
+  const supervise = useSuperviseStore.getState();
+
+  // Seeded counters are made up, and demo values were already spoken for when the
+  // demo raised them. Judging either would nudge about time the user never spent.
+  if (supervise.minutesSource !== 'usage-stats') return 'not-measured';
+
+  // An unanswered nudge owns the moment; piling a second one on top of it reads as
+  // nagging rather than noticing. Nothing is lost by waiting: the level is worked
+  // out from the current minutes, so the next pass picks up wherever usage has got
+  // to rather than replaying the level that was skipped.
+  if (supervise.activeNudge && isNudgeFresh(supervise.activeNudge)) return 'nudge-pending';
+
+  let candidate: { appId: string; minutes: number; level: number; overage: number } | null = null;
+
+  for (const app of supervise.apps) {
+    // No packages means nothing measured this app, so its counter is seed or demo
+    // data regardless of what the day's source says.
+    if (app.androidPackages.length === 0) continue;
+    // A zero or negative threshold would make every level infinite. Not reachable
+    // from the seeded list, but the field is editable state.
+    if (app.thresholdMinutes <= 0) continue;
+
+    const minutes = supervise.minutesToday[app.id] ?? 0;
+    const level = Math.floor(minutes / app.thresholdMinutes);
+
+    // Below the threshold, or still inside a multiple already spoken for.
+    if (level < 1 || level <= supervise.lastNudgedLevel(app.id)) continue;
+
+    const overage = minutes - app.thresholdMinutes;
+    if (
+      !candidate ||
+      level > candidate.level ||
+      (level === candidate.level && overage > candidate.overage)
+    ) {
+      candidate = { appId: app.id, minutes, level, overage };
+    }
+  }
+
+  if (!candidate) return 'no-candidate';
+
+  const result = triggerSuperviseNudge(candidate.appId, candidate.minutes, {
+    source: 'detection',
+  });
+
+  // Only record a level the user was actually told about. A trigger that no-opped
+  // has said nothing, so the next pass should be free to try the same level again.
+  if (result === 'raised') supervise.markNudgedLevel(candidate.appId, candidate.level);
+
+  return result;
 }

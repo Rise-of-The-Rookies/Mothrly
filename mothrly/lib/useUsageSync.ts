@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
+import { evaluateSuperviseNudges } from './superviseNudge';
 import { hasUsageAccess, isUsageTrackingSupported, readUsageMinutesToday } from './usageStats';
 
 import useSuperviseStore from '@/store/superviseStore';
 
 /**
- * Keeps the supervised app times in step with what Android actually recorded.
+ * Keeps the supervised app times in step with what Android actually recorded, and
+ * hands the fresh numbers to the nudge check.
  *
  * Both hooks here are no-ops unless {@link isUsageTrackingSupported} is true, so
  * iOS and Expo Go keep running on the seeded and demo values with nothing to
@@ -32,11 +34,14 @@ function trackedPackages(): string[] {
 }
 
 /**
- * Reads usage for today and writes it into the store.
+ * Reads usage for today, writes it into the store, and nudges if an app has gone
+ * over its threshold.
  *
  * Resolves to whether real data was applied. `false` covers every "not now"
  * case — unsupported platform, permission not granted, query failed — and leaves
- * the existing numbers alone.
+ * the existing numbers alone, which is also why the nudge check is skipped on that
+ * path: judging stale counters would raise a nudge about a session already
+ * commented on.
  */
 export async function syncUsageMinutes(): Promise<boolean> {
   if (!isUsageTrackingSupported()) return false;
@@ -45,6 +50,10 @@ export async function syncUsageMinutes(): Promise<boolean> {
   if (!minutes) return false;
 
   useSuperviseStore.getState().applyUsageMinutes(minutes);
+  // Synchronous, and deliberately after the write: it reads the counters back out
+  // of the store rather than taking them as an argument, so the decision is made
+  // from the same state the Supervise screen is showing.
+  evaluateSuperviseNudges();
   return true;
 }
 

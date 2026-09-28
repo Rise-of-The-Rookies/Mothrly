@@ -6,10 +6,10 @@ import { zustandStorage } from '@/lib/storage';
 /**
  * The apps Mothrly supervises, and how long each has been used today.
  *
- * Tracking itself is not wired up yet — nothing here talks to a usage API. The
- * store owns the list, the per-app minute counters, and the daily rollover that
- * zeroes them, so the screen can render real state and a future tracker only has
- * to call {@link SuperviseStore.addMinutes}.
+ * The store owns the list, the per-app minute counters, the daily rollover that
+ * zeroes them, and the log of which apps have already been nudged about today.
+ * Nothing here talks to a usage API itself: `lib/useUsageSync.ts` reads Android's
+ * numbers in and `lib/superviseNudge.ts` decides what to say about them.
  *
  * No real brand assets are used anywhere: each app carries an initial and a
  * palette colour, and the UI draws its own tile from those.
@@ -34,8 +34,11 @@ export type SupervisedApp = {
   color: string;
   status: SuperviseStatus;
   /**
-   * Minutes of use in a day before Mothrly nudges about this app. Crossing it is
-   * what a detection event reports; see `lib/superviseNudge.ts`.
+   * Minutes of use in a day before Mothrly nudges about this app.
+   *
+   * Also the step the nudges escalate on: each whole multiple of this gets its own
+   * nudge, so a 15-minute threshold is spoken to at 15, 30 and 45 minutes. See
+   * `lib/superviseNudge.ts`.
    */
   thresholdMinutes: number;
   /**
@@ -233,6 +236,34 @@ export type SuperviseStore = {
   dismissNudge: () => void;
 
   /**
+   * The highest escalation level already nudged about, per app id, and the local
+   * day that level belongs to.
+   *
+   * A level is how many whole multiples of its threshold an app has been used for:
+   * level 1 at 15 minutes on a 15-minute threshold, level 2 at 30, and so on. This
+   * is what paces detection. Usage is re-read every time Mothrly comes back to the
+   * foreground, so an app over its threshold stays over it for the rest of the
+   * day; recording the level means each new multiple gets one nudge and no
+   * multiple gets two.
+   *
+   * The day is stored alongside the level rather than relied on being cleared, so
+   * a rollover that has not run yet cannot make yesterday's level silence today.
+   *
+   * Persisted, because the point is to survive the app being killed and reopened.
+   */
+  nudgeLevels: Record<string, { day: string; level: number }>;
+  /**
+   * The highest level nudged about for this app today, or 0 if none — including
+   * when the stored level belongs to an earlier day.
+   */
+  lastNudgedLevel: (appId: string) => number;
+  /**
+   * Records the level a nudge just went out for. Ignored if it is not higher than
+   * what today has already reported, so a level can never move backwards.
+   */
+  markNudgedLevel: (appId: string, level: number) => void;
+
+  /**
    * Zeroes today's counters when the local date has moved on.
    *
    * Cheap and idempotent: call it from a mount effect, and again whenever the
@@ -284,6 +315,7 @@ const useSuperviseStore = create<SuperviseStore>()(
       minutesSource: 'seed',
       usageSyncedAt: null,
       activeNudge: null,
+      nudgeLevels: {},
 
       applyUsageMinutes: (minutesByPackage) => {
         get().rollOverIfNeeded();
@@ -314,12 +346,29 @@ const useSuperviseStore = create<SuperviseStore>()(
         set({ activeNudge: null });
       },
 
+      lastNudgedLevel: (appId) => {
+        const entry = get().nudgeLevels[appId];
+        // A level from an earlier day has nothing to say about today's usage.
+        if (!entry || entry.day !== localDayKey()) return 0;
+        return entry.level;
+      },
+
+      markNudgedLevel: (appId, level) => {
+        const next = Number.isFinite(level) ? Math.max(0, Math.floor(level)) : 0;
+        if (next <= get().lastNudgedLevel(appId)) return;
+        set((state) => ({
+          nudgeLevels: { ...state.nudgeLevels, [appId]: { day: localDayKey(), level: next } },
+        }));
+      },
+
       rollOverIfNeeded: () => {
         const today = localDayKey();
         if (get().trackedOn === today) return;
         // Yesterday's numbers say nothing about today, measured or not, so the
-        // source resets with them and the next sync re-establishes it.
-        set({ trackedOn: today, minutesToday: {}, minutesSource: 'seed' });
+        // source resets with them and the next sync re-establishes it. Clearing
+        // `nudgeLevels` is housekeeping rather than correctness — `lastNudgedLevel`
+        // already checks the day — but it keeps stale entries out of storage.
+        set({ trackedOn: today, minutesToday: {}, minutesSource: 'seed', nudgeLevels: {} });
       },
 
       addMinutes: (appId, minutes) => {
@@ -367,24 +416,35 @@ const useSuperviseStore = create<SuperviseStore>()(
           minutesSource: 'seed',
           usageSyncedAt: null,
           activeNudge: null,
+          nudgeLevels: {},
         });
       },
     }),
     {
       name: 'mothrly.supervise',
       storage: createJSONStorage(() => zustandStorage),
-      version: 3,
+      version: 5,
       // v1 apps predate `thresholdMinutes`, v2 predates `androidPackages`. The list
       // is seeded content rather than user data at this point, so re-seeding it is
       // cheaper and safer than patching each entry; the counters are kept.
+      //
+      // v3 predates the nudge log and v4 recorded only a day per app rather than a
+      // level. Both start the log empty: the cost is at most one repeat nudge on the
+      // day of the upgrade, against the risk of reading a level that isn't there.
       migrate: (persisted, version) => {
-        if (version >= 3) return persisted as SuperviseStore;
+        const base = persisted as Partial<SuperviseStore>;
+
+        if (version >= 3) {
+          return { ...base, nudgeLevels: {} } as SuperviseStore;
+        }
+
         return {
-          ...(persisted as Partial<SuperviseStore>),
+          ...base,
           apps: [...DEFAULT_APPS],
           minutesSource: 'seed',
           usageSyncedAt: null,
           activeNudge: null,
+          nudgeLevels: {},
         } as SuperviseStore;
       },
       onRehydrateStorage: () => (state, error) => {
