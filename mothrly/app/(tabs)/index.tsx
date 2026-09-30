@@ -1,16 +1,20 @@
 import { router } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, Text, View, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Speech from 'expo-speech';
 
 import Character from '@/components/Character';
 import FadeSlideIn from '@/components/FadeSlideIn';
+import GifPickerModal from '@/components/GifPickerModal';
 import {
   DropletIcon,
   type IconProps,
   MoonIcon,
   SettingsIcon,
   TargetIcon,
+  PlayIcon,
+  FlameIcon,
 } from '@/components/Icons';
 import PressableScale from '@/components/PressableScale';
 import {
@@ -25,8 +29,9 @@ import {
   type NotificationPermission,
   useNotificationPermission,
 } from '@/lib/useNotificationPermission';
-import { useActivePersona } from '@/store/personaStore';
+import usePersonaStore, { useActivePersona } from '@/store/personaStore';
 import useReminderStore from '@/store/reminderStore';
+import useStatsStore, { type Mood } from '@/store/statsStore';
 
 /**
  * Home: the character, what it wants to tell you next, and today at a glance.
@@ -76,6 +81,7 @@ export default function HomeScreen() {
   // the voice in the bubble. Subscribed to the id alone, so this re-renders when
   // the user switches mood on the picker and not for anything else.
   const persona = useActivePersona();
+  const voiceId = usePersonaStore((state) => state.voiceId);
 
   // Reminders are planned from settings alone, so without this the bubble would
   // promise a nudge that the OS will never deliver.
@@ -86,6 +92,28 @@ export default function HomeScreen() {
   useEffect(() => {
     completeSetup();
   }, [completeSetup]);
+
+  const currentStreak = useStatsStore((state) => state.currentStreak);
+  const getTodayMood = useStatsStore((state) => state.getTodayMood);
+  const getTodayMoodImage = useStatsStore((state) => state.getTodayMoodImage);
+  const logMood = useStatsStore((state) => state.logMood);
+  const logMoodImage = useStatsStore((state) => state.logMoodImage);
+  const acknowledgeReminder = useStatsStore((state) => state.acknowledgeReminder);
+  const checkStreak = useStatsStore((state) => state.checkStreak);
+
+  const [gifModalVisible, setGifModalVisible] = useState(false);
+
+  // Check if streak is broken on mount or day change
+  useEffect(() => {
+    checkStreak();
+  }, [now, checkStreak]);
+
+  const todayMood = getTodayMood();
+  const todayMoodImage = getTodayMoodImage();
+
+  const pickMoodImage = () => {
+    setGifModalVisible(true);
+  };
 
   const highlight = useMemo(
     () => reminderHighlight({ hydration, sleep, focus }, lastFired, now, persona.id),
@@ -130,22 +158,70 @@ export default function HomeScreen() {
         </FadeSlideIn>
 
         <FadeSlideIn index={1} style={styles.bubble}>
-          {/* Tail, pointing back up at the character. */}
           <View style={styles.bubbleTail} />
-          <Text style={styles.bubbleMessage}>{bubble.message}</Text>
+          <View style={styles.bubbleHeaderRow}>
+            <Text style={[styles.bubbleMessage, { flex: 1 }]}>{bubble.message}</Text>
+            <View style={{ flexDirection: 'row', gap: spacing.xs }}>
+              {highlight?.kind === 'fired' && (
+                <PressableScale
+                  onPress={acknowledgeReminder}
+                  style={styles.ackButton}
+                >
+                  <Text style={styles.ackButtonText}>Got it</Text>
+                </PressableScale>
+              )}
+              {voiceId && (
+                <PressableScale 
+                  onPress={() => {
+                    Speech.stop();
+                    Speech.speak(bubble.message, { voice: voiceId });
+                  }}
+                  style={styles.playButton}
+                  hitSlop={8}
+                >
+                  <PlayIcon size={20} color={colors.primary} />
+                </PressableScale>
+              )}
+            </View>
+          </View>
           <Text style={styles.bubbleMeta}>{bubble.meta}</Text>
         </FadeSlideIn>
 
         <View style={styles.chipRow}>
           <StatusChip
             index={2}
+            icon={FlameIcon}
+            label="Streak"
+            value={`${currentStreak} days`}
+          />
+          <StatusChip
+            index={3}
             icon={DropletIcon}
             label="Hydration"
             value={MOCK_STATUS.hydration}
           />
-          <StatusChip index={3} icon={MoonIcon} label="Sleep" value={MOCK_STATUS.sleep} />
-          <StatusChip index={4} icon={TargetIcon} label="Focus" value={MOCK_STATUS.focus} />
+          <StatusChip index={4} icon={MoonIcon} label="Sleep" value={MOCK_STATUS.sleep} />
         </View>
+
+        <FadeSlideIn index={4.5} style={styles.moodCard}>
+          <View style={styles.moodHeader}>
+            <Text style={styles.moodTitle}>How are you feeling today?</Text>
+            <PressableScale onPress={pickMoodImage} style={styles.gifButton}>
+              <Text style={styles.gifButtonText}>Search GIF 🔍</Text>
+            </PressableScale>
+          </View>
+          
+          {todayMoodImage ? (
+            <View style={styles.customMoodImageContainer}>
+              <Image source={{ uri: todayMoodImage }} style={styles.customMoodImage} />
+              <Text style={styles.moodThanks}>Love the emotion! Thanks for checking in.</Text>
+            </View>
+          ) : (
+            <View style={styles.emptyMoodContainer}>
+              <Text style={styles.emptyMoodText}>Search for a GIF to express your mood!</Text>
+            </View>
+          )}
+        </FadeSlideIn>
 
         {/* The whole row toggles, not just the switch: a 44pt-wide target beside
             two lines of copy is the hardest thing on the screen to hit. The switch
@@ -180,6 +256,12 @@ export default function HomeScreen() {
           </PressableScale>
         </FadeSlideIn>
       </ScrollView>
+
+      <GifPickerModal
+        visible={gifModalVisible}
+        onClose={() => setGifModalVisible(false)}
+        onSelect={(url) => logMoodImage(url)}
+      />
     </View>
   );
 }
@@ -336,6 +418,30 @@ const styles = StyleSheet.create({
     borderRightColor: 'transparent',
     borderBottomColor: colors.card,
   },
+  bubbleHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  playButton: {
+    padding: spacing.xs,
+    marginLeft: spacing.sm,
+    backgroundColor: colors.background,
+    borderRadius: radius.pill,
+  },
+  ackButton: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    marginLeft: spacing.sm,
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    justifyContent: 'center',
+  },
+  ackButtonText: {
+    color: colors.background,
+    fontFamily: fonts.bold,
+    fontSize: 13,
+  },
   bubbleMessage: {
     fontFamily: fonts.regular,
     fontSize: 17,
@@ -403,5 +509,59 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: colors.text,
+  },
+  moodCard: {
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  moodHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  gifButton: {
+    backgroundColor: colors.border,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  gifButtonText: {
+    fontFamily: fonts.bold,
+    fontSize: 12,
+    color: colors.text,
+  },
+  customMoodImageContainer: {
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
+  customMoodImage: {
+    width: 120,
+    height: 120,
+    borderRadius: radius.md,
+    backgroundColor: colors.background,
+  },
+  moodTitle: {
+    fontFamily: fonts.bold,
+    fontSize: 16,
+    color: colors.text,
+  },
+  emptyMoodContainer: {
+    paddingVertical: spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyMoodText: {
+    fontFamily: fonts.medium,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  moodThanks: {
+    fontFamily: fonts.medium,
+    fontSize: 13,
+    color: colors.primaryDark,
+    textAlign: 'center',
+    marginTop: spacing.xs,
   },
 });

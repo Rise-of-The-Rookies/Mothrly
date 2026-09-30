@@ -456,11 +456,13 @@ export function routeForNotification(notification: NotificationsModule.Notificat
  * {@link clearInitialNotificationResponse} — so a remount does not navigate twice.
  */
 export function getInitialNotificationResponse(): NotificationsModule.NotificationResponse | null {
+  if (Platform.OS === 'web') return null;
   return Notifications?.getLastNotificationResponse() ?? null;
 }
 
 /** Forgets the cold-start tap, so a later remount does not replay it. */
 export function clearInitialNotificationResponse(): void {
+  if (Platform.OS === 'web') return;
   Notifications?.clearLastNotificationResponse();
 }
 
@@ -494,7 +496,7 @@ export async function getPendingReminderCounts(): Promise<Record<ReminderType, n
   >;
 
   // All zeros is the honest answer when there is no queue to read.
-  if (!Notifications) return counts;
+  if (!Notifications || Platform.OS === 'web') return counts;
 
   try {
     const pending = await Notifications.getAllScheduledNotificationsAsync();

@@ -25,8 +25,12 @@ import { zustandStorage } from '@/lib/storage';
 export type PersonaStore = {
   /** The active persona id. Persisted. Defaults to {@link DEFAULT_PERSONA_ID}. */
   personaId: PersonaId;
+  /** The selected voice ID for text-to-speech. */
+  voiceId: string | null;
   /** Switches persona. A no-op when the id is already active or unrecognised. */
   setPersona: (id: PersonaId) => void;
+  /** Sets the TTS voice ID. */
+  setVoice: (voiceId: string | null) => void;
   /** Returns to the default persona. */
   resetToDefault: () => void;
 };
@@ -35,6 +39,7 @@ const usePersonaStore = create<PersonaStore>()(
   persist(
     (set, get) => ({
       personaId: DEFAULT_PERSONA_ID,
+      voiceId: null,
 
       setPersona: (id) => {
         if (!isPersonaId(id)) {
@@ -45,22 +50,26 @@ const usePersonaStore = create<PersonaStore>()(
         set({ personaId: id });
       },
 
+      setVoice: (voiceId) => {
+        set({ voiceId });
+      },
+
       resetToDefault: () => {
-        if (get().personaId === DEFAULT_PERSONA_ID) return;
-        set({ personaId: DEFAULT_PERSONA_ID });
+        set({ personaId: DEFAULT_PERSONA_ID, voiceId: null });
       },
     }),
     {
       name: 'mothrly.persona',
       storage: createJSONStorage(() => zustandStorage),
-      version: 1,
-      partialize: (state) => ({ personaId: state.personaId }),
-      // A build that drops or renames a persona would otherwise rehydrate an id
-      // nothing can resolve. `getPersona` tolerates that, but the stored value is
-      // repaired here so the UI highlights a row that actually exists.
+      version: 2, // Bump version
+      partialize: (state) => ({ personaId: state.personaId, voiceId: state.voiceId }),
       merge: (persisted, current) => {
-        const stored = (persisted as Partial<PersonaStore> | undefined)?.personaId;
-        return { ...current, personaId: isPersonaId(stored) ? stored : DEFAULT_PERSONA_ID };
+        const stored = persisted as Partial<PersonaStore> | undefined;
+        return { 
+          ...current, 
+          personaId: isPersonaId(stored?.personaId) ? stored.personaId : DEFAULT_PERSONA_ID,
+          voiceId: stored?.voiceId ?? null
+        };
       },
       onRehydrateStorage: () => (_state, error) => {
         if (error) {

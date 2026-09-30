@@ -9,6 +9,9 @@ import { PERSONAS, type Persona } from '@/data/personas';
 import { usePremiumEntitlement } from '@/lib/revenuecat';
 import { colors, fonts, radius, spacing } from '@/lib/theme';
 import usePersonaStore from '@/store/personaStore';
+import * as Speech from 'expo-speech';
+import { Picker } from '@react-native-picker/picker';
+import { useEffect, useState } from 'react';
 
 /**
  * Persona picker: which mood Mothrly is in.
@@ -38,6 +41,25 @@ export default function PersonasScreen() {
     router.push('/paywall');
   }
 
+  const voiceId = usePersonaStore((state) => state.voiceId);
+  const setVoice = usePersonaStore((state) => state.setVoice);
+  const [voices, setVoices] = useState<Speech.Voice[]>([]);
+
+  useEffect(() => {
+    Speech.getAvailableVoicesAsync().then((v) => {
+      // Filter to english for simplicity
+      setVoices(v.filter((voice) => voice.language.startsWith('en')));
+    });
+  }, []);
+
+  function handleVoiceChange(vId: string) {
+    setVoice(vId === 'none' ? null : vId);
+    if (vId !== 'none') {
+      Speech.stop();
+      Speech.speak("This is my new voice.", { voice: vId });
+    }
+  }
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Choose her mood</Text>
@@ -52,9 +74,6 @@ export default function PersonasScreen() {
             index={index}
             persona={persona}
             selected={persona.id === personaId}
-            // Premium personas stay in limbo until the entitlement is known:
-            // not shown as locked, but not selectable either, so a tap can't
-            // slip a paid mood through while the answer is still in flight.
             locked={persona.isPremium && !hasPremium && !isLoading}
             pending={persona.isPremium && isLoading}
             onSelect={() => setPersona(persona.id)}
@@ -63,11 +82,38 @@ export default function PersonasScreen() {
         ))}
       </View>
 
-      {/* Nothing left to unlock once the entitlement is active, so the button
-          retires rather than leading to a paywall for something already owned. */}
+      <FadeSlideIn index={PERSONAS.length}>
+        <View style={styles.voiceSection}>
+          <Text style={styles.voiceTitle}>Voice (Optional)</Text>
+          <View style={styles.pickerContainer}>
+            <Picker
+              selectedValue={voiceId || 'none'}
+              onValueChange={handleVoiceChange}
+              style={{ 
+                color: colors.text,
+                backgroundColor: colors.background,
+                padding: spacing.sm,
+                paddingHorizontal: spacing.md,
+                fontFamily: fonts.medium,
+                fontSize: 16,
+                borderWidth: 2,
+                borderColor: colors.border,
+                borderRadius: radius.md,
+                outlineStyle: 'none' as any,
+              }}
+              dropdownIconColor={colors.primary}
+            >
+              <Picker.Item label="Text only (no voice)" value="none" />
+              {voices.map((v) => (
+                <Picker.Item key={v.identifier} label={`${v.name} (${v.language})`} value={v.identifier} />
+              ))}
+            </Picker>
+          </View>
+        </View>
+      </FadeSlideIn>
+
       {hasPremium ? null : (
-        // Last in the cascade, after all four cards.
-        <FadeSlideIn index={PERSONAS.length}>
+        <FadeSlideIn index={PERSONAS.length + 1}>
           <PressableScale
             accessibilityRole="button"
             accessibilityLabel="Unlock all moods"
@@ -273,5 +319,22 @@ const styles = StyleSheet.create({
     color: colors.background,
     fontFamily: fonts.bold,
     fontSize: 19,
+  },
+  voiceSection: {
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  voiceTitle: {
+    fontFamily: fonts.bold,
+    fontSize: 16,
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  pickerContainer: {
+    backgroundColor: colors.background,
+    borderRadius: radius.md,
+    overflow: 'hidden',
   },
 });
